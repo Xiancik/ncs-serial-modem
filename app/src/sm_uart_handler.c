@@ -351,6 +351,10 @@ static void uart_callback(const struct device *dev, struct uart_event *evt, void
 		rx_buf_ref(evt->data.rx.buf);
 		rx_event.buf = &evt->data.rx.buf[evt->data.rx.offset];
 		rx_event.len = evt->data.rx.len;
+		/* Bring-up debug: dump raw bytes arriving from the nRF54L15 host so RTT
+		 * shows whether the host's AT commands actually reach the modem UART.
+		 * Gated by CONFIG_SM_LOG_LEVEL_DBG; remove after triage. */
+		LOG_HEXDUMP_DBG(rx_event.buf, rx_event.len, "uart rx");
 		err = k_msgq_put(&rx_event_queue, &rx_event, K_NO_WAIT);
 		if (err) {
 			LOG_ERR("RX event queue full, dropped %zu bytes", evt->data.rx.len);
