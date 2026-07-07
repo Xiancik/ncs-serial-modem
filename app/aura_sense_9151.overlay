@@ -1,29 +1,29 @@
 /*
- * Aura Sense Pro - onboard nRF9151 (U3) Serial Modem UART.
+ * Aura Sense Pro - onboard nRF9151 (U3) Serial Modem UART, with DTR/RI.
  *
  * Pins traced from aura-sense-hw-pro.kicad_pcb by NET -> PAD (U3 = nRF9151):
- *   nRF9151 RXD = P0.03 (U3 pad 59)  <- net nRF91-RXD-to-nRF54-TXD <- nRF54L15 TXD P0.00
- *   nRF9151 TXD = P0.02 (U3 pad 58)  -> net nRF91-TXD-to-nRF54-RXD -> nRF54L15 RXD P0.01
- *   nRF9151 RTS = P0.06 (U3 pad 63)  -> net nRF91-RTS-to-nRF54-CTS -> nRF54L15 CTS P0.03
- *   nRF9151 CTS = P0.07 (U3 pad 64)  <- net nRF91-CTS-to-nRF54-RTS <- nRF54L15 RTS P0.02
- * 115200 8N1, matching the host uart30 in the FW board DTS.
+ *   nRF9151 RXD = P0.03 (U3 pad 59)  <- nRF54L15 TXD P0.00
+ *   nRF9151 TXD = P0.02 (U3 pad 58)  -> nRF54L15 RXD P0.01
+ *   nRF9151 RTS = P0.06 (U3 pad 63)  -> nRF54L15 CTS P0.03
+ *   nRF9151 CTS = P0.07 (U3 pad 64)  <- nRF54L15 RTS P0.02
+ *   nRF9151 DTR = P0.31 (senses)     <- host P1.02 (PCB net /LTE/DTR, R62+TP13)
+ *   nRF9151 RI  = P0.30 (drives)     -> host P0.04 (PCB net /LTE/RING, TP12)
+ * 115200 8N1, matching host uart30 in the FW board DTS.
  *
- * WARNING/HISTORY: an earlier revision assigned P0.00-P0.03 here -- those are
- * the nRF54L15's (U2) pin numbers, NOT the nRF9151's (U3). With the wrong pins
- * SLM listened on P0.00 while the host's TX actually lands on nRF9151 P0.03, so
- * no AT was ever received, and the host wedged on a never-asserted CTS. The
- * nRF9151 is U3; its UART is on P0.02/P0.03/P0.06/P0.07.
+ * The AT UART is wrapped in a nordic,dtr-uart node so SLM's AT#XSLEEP works:
+ * with DTR asserted the modem UART is powered and answers AT; when the host
+ * deasserts DTR the driver powers the UART down (the low-power state XSLEEP
+ * enters), and the modem raises RI when it has data.
  *
- * The AT UART is a PLAIN uart (not nordic,dtr-uart): the nRF54L15 host does
- * not drive DTR, so the modem must stay awake and answer AT immediately.
- * DTR (nRF9151 P1.02) and RING (nRF9151 P0.04) are wired on the board but
- * intentionally unused here; adopt the dtr-uart driver later if the host
- * gains a DTR/RI handshake for low-power operation.
+ * DTR polarity is ACTIVE_HIGH (like the nRF9151 DK reference overlay), NOT the
+ * external-mcu overlay's ACTIVE_LOW: on this board HIGH = asserted = awake.
+ * With the pull-up the line idles asserted, so the modem stays awake unless the
+ * host actively drives it low -- avoids the accidental System-OFF/brick we hit.
  */
 
 / {
 	chosen {
-		ncs,sm-uart = &uart2;
+		ncs,sm-uart = &dtr_uart2;
 	};
 };
 
@@ -31,33 +31,47 @@
 &uart0     { status = "disabled"; };
 &dtr_uart0 { status = "disabled"; };
 
-/* The DK's external SPI-NOR (gd25wb256) is NOT fitted on the Aura board. The
- * pm_static layout places every partition (mcuboot primary+secondary, TF-M,
- * settings) in internal flash_primary, so external flash is unused. Disable the
- * device so the spi_nor driver stops looping "Waiting until flash is ready" --
- * that retry both spams the RTT boot log and delays init. */
+/* The DK's external SPI-NOR (gd25wb256) is NOT fitted on the Aura board. */
 &gd25wb256 { status = "disabled"; };
 
 &uart2 {
 	compatible = "nordic,nrf-uarte";
 	current-speed = <115200>;
-	hw-flow-control;   /* modem P0.06=RTS / P0.07=CTS <-> host P0.02/P0.03 */
+	/* HW flow control OFF (must match host uart30). The AT link was only ever
+	 * validated HWFC-off; with HWFC on, the host's uart_poll_out blocks forever
+	 * on CTS whenever the modem hasn't asserted RTS -> "AT hangs". Re-enable on
+	 * BOTH sides together only after the plain link + DTR sleep/wake are
+	 * confirmed working. RTS/CTS pins stay routed by pinctrl but unused. */
+	/* hw-flow-control; */   /* modem P0.06=RTS / P0.07=CTS <-> host P0.02/P0.03 */
 	status = "okay";
 	pinctrl-0 = <&uart2_default_aura>;
 	pinctrl-1 = <&uart2_sleep_aura>;
 	pinctrl-names = "default", "sleep";
+
+	dtr_uart2: dtr-uart {
+		compatible = "nordic,dtr-uart";
+		dtr-gpios = <&gpio0 31 (GPIO_PULL_UP | GPIO_ACTIVE_HIGH)>; /* P0.31: HIGH=asserted=awake, matches nRF9151 DK ref (NOT external-mcu's active-low) */
+		ri-gpios  = <&gpio0 30 GPIO_ACTIVE_LOW>;                 /* P0.30 */
+		status = "okay";
+	};
+};
+
+&gpio0 {
+	status = "okay";
+	/* PORT event on DTR (P0.31) so DTR wake is detected from low power. */
+	sense-edge-mask = <0x80000000>;
 };
 
 &pinctrl {
 	uart2_default_aura: uart2_default_aura {
 		group1 {
-			psels = <NRF_PSEL(UART_RX,  0, 3)>,   /* nRF91 RXD = P0.03 (U3 pad 59) */
-				<NRF_PSEL(UART_CTS, 0, 7)>;   /* nRF91 CTS = P0.07 (U3 pad 64) */
+			psels = <NRF_PSEL(UART_RX,  0, 3)>,   /* nRF91 RXD = P0.03 */
+				<NRF_PSEL(UART_CTS, 0, 7)>;   /* nRF91 CTS = P0.07 */
 			bias-pull-up;
 		};
 		group2 {
-			psels = <NRF_PSEL(UART_TX,  0, 2)>,   /* nRF91 TXD = P0.02 (U3 pad 58) */
-				<NRF_PSEL(UART_RTS, 0, 6)>;   /* nRF91 RTS = P0.06 (U3 pad 63) */
+			psels = <NRF_PSEL(UART_TX,  0, 2)>,   /* nRF91 TXD = P0.02 */
+				<NRF_PSEL(UART_RTS, 0, 6)>;   /* nRF91 RTS = P0.06 */
 		};
 	};
 
