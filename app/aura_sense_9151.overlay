@@ -41,10 +41,7 @@
 &uart2 {
 	compatible = "nordic,nrf-uarte";
 	current-speed = <115200>;
-	/* hw-flow-control still OFF for the pin-fix confirmation flash (host uart30
-	 * is also HWFC-off). Once AT<->OK works, re-enable hw-flow-control here AND
-	 * on the host uart30 -- the RTS/CTS pins (modem P0.06/P0.07, host P0.02/P0.03)
-	 * are now correct, so flow control will work. */
+	hw-flow-control;   /* modem P0.06=RTS / P0.07=CTS <-> host P0.02/P0.03 */
 	status = "okay";
 	pinctrl-0 = <&uart2_default_aura>;
 	pinctrl-1 = <&uart2_sleep_aura>;
